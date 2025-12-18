@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strict Schedule Generator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            body { font-size: 10pt; background: white; }
+            .page-break { page-break-before: always; }
+            .bg-red-100 { background-color: #fee2e2 !important; -webkit-print-color-adjust: exact; }
+            .bg-blue-50 { background-color: #eff6ff !important; -webkit-print-color-adjust: exact; }
+        }
+        .btn-press { transition: transform 0.1s; }
+        .btn-press:active { transform: scale(0.95); }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-4 font-sans text-gray-900">
+
+    <div class="max-w-7xl mx-auto bg-white p-6 rounded-lg shadow-lg mb-6 no-print border-t-8 border-blue-900">
+        <div class="flex flex-col gap-4">
+            <div class="flex justify-between items-center">
+                <div>
+                    <h1 class="text-2xl font-bold text-gray-800">DepEd Schedule Generator</h1>
+                    <p class="text-sm text-gray-600">Strict Subject Matching • Load Balancing • Gap Identification</p>
+                </div>
+                <div class="text-right hidden md:block">
+                    <p class="text-xs font-bold text-blue-900">SY 2025-2026</p>
+                </div>
+            </div>
+            
+            <hr class="border-gray-200">
+
+            <div class="flex flex-wrap gap-3 items-center">
+                <button onclick="runGenerator()" class="btn-press bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg shadow flex items-center gap-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                    </svg>
+                    GENERATE NEW SCHEDULE
+                </button>
+
+                <div class="h-10 border-l border-gray-300 mx-2"></div>
+
+                <select id="viewMode" onchange="renderDisplay()" class="bg-gray-50 border border-gray-300 text-gray-900 text-sm rounded-lg focus:ring-blue-500 focus:border-blue-500 block p-2.5 font-bold">
+                    <option value="summary">1. View Gaps (Request List)</option>
+                    <option value="teacher">2. View Faculty Loads</option>
+                    <option value="student">3. View Class Schedules</option>
+                </select>
+
+                <button onclick="window.print()" class="ml-auto bg-gray-700 hover:bg-gray-800 text-white font-bold py-2 px-4 rounded shadow">
+                    Print / PDF
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="displayArea" class="max-w-7xl mx-auto">
+        </div>
+
+<script>
+    // --- 1. DATA CONFIGURATION ---
+
+    const subjects = ['Math', 'English', 'Science', 'Filipino', 'AP', 'EsP', 'TLE', 'MAPEH'];
+
+    const sections = [
+        { id: 'g7a', name: 'G7 - Diamond', level: 7 },
+        { id: 'g7b', name: 'G7 - Emerald', level: 7 },
+        { id: 'g7c', name: 'G7 - Garnet', level: 7 },
+        { id: 'g8a', name: 'G8 - Joshua', level: 8 },
+        { id: 'g8b', name: 'G8 - Elijah', level: 8 },
+        { id: 'g8c', name: 'G8 - Moses', level: 8 },
+        { id: 'g9a', name: 'G9 - Charity', level: 9 },
+        { id: 'g9b', name: 'G9 - Hope', level: 9 },
+        { id: 'g10a', name: 'G10 - Einstein', level: 10 },
+        { id: 'g10b', name: 'G10 - Kepler', level: 10 }
+    ];
+
+    // 13 Teachers - Strict Majors
+    // Note: No Filipino or EsP teachers listed.
+    const teachersDB = [
+        { id: 'sci1', name: 'Science Tr. 1', major: 'Science' },
+        { id: 'eng1', name: 'English Tr. 1', major: 'English' },
+        { id: 'eng2', name: 'English Tr. 2', major: 'English' },
+        { id: 'math1', name: 'Math Tr. 1', major: 'Math' },
+        { id: 'math2', name: 'Math Tr. 2', major: 'Math' },
+        { id: 'math3', name: 'Math Tr. 3', major: 'Math' },
+        { id: 'ap1', name: 'AP Tr. 1', major: 'AP' },
+        { id: 'ap2', name: 'AP Tr. 2', major: 'AP' },
+        { id: 'ap3', name: 'AP Tr. 3', major: 'AP' },
+        { id: 'mapeh1', name: 'MAPEH Tr. 1', major: 'MAPEH' },
+        { id: 'mapeh2', name: 'MAPEH Tr. 2', major: 'MAPEH' },
+        { id: 'tle1', name: 'TLE Tr. 1', major: 'TLE' },
+        { id: 'tle2', name: 'TLE Tr. 2', major: 'TLE' }
+    ];
+
+    // State
+    let activeTeachers = [];
+    let sectionSchedule = {}; // { sectionId: [slot0, slot1...]}
+    let teacherSchedule = {}; // { teacherId: [slot0, slot1...]}
+    let vacancies = []; // List of missing classes
+
+    // --- 2. GENERATION ALGORITHM ---
+
+    function runGenerator() {
+        // Reset State
+        activeTeachers = JSON.parse(JSON.stringify(teachersDB)); // Deep copy to reset loads
+        activeTeachers.forEach(t => t.loads = new Array(8).fill(null));
+        
+        sectionSchedule = {};
+        sections.forEach(s => sectionSchedule[s.id] = new Array(8).fill(null));
+        
+        teacherSchedule = {};
+        activeTeachers.forEach(t => teacherSchedule[t.id] = new Array(8).fill(null));
+        
+        vacancies = [];
+
+        // Step A: Assign Teachers to Sections (The "Who")
+        // We create a "Requirement List" for all 10 sections
+        let requirements = [];
+        sections.forEach(sec => {
+            subjects.forEach(sub => {
+                requirements.push({ section: sec, subject: sub });
+            });
+        });
+
+        // Shuffle requirements to randomize slotting later
+        requirements.sort(() => Math.random() - 0.5);
+
+        // Step B: Assign Time Slots (The "When")
+        // We try to slot them into 0-7.
+        
+        requirements.forEach(req => {
+            const { section, subject } = req;
+            
+            // 1. Find a qualified teacher
+            // Filter by Major Subject
+            let candidates = activeTeachers.filter(t => t.major === subject);
+            
+            // 2. Load Balancing (Sort by current load count asc)
+            candidates.sort((a, b) => getLoadCount(a) - getLoadCount(b));
+
+            let assigned = false;
+            
+            // 3. Define Slot Preference (Morning bias for lower grades)
+            let slots = [0,1,2,3,4,5,6,7];
+            if(section.level <= 8 && (subject === 'TLE' || subject === 'MAPEH')) {
+                // Slight bias logic for TLE/MAPEH
+                slots = [0,1,2,3,4,5,6,7]; 
+            } else if (section.level > 8 && (subject === 'TLE' || subject === 'MAPEH')) {
+                slots = [5,6,7,4,3,2,1,0];
+            } else {
+                slots.sort(() => Math.random() - 0.5);
+            }
+
+            // 4. Try to place
+            // Try to find a teacher who is free at a slot where the section is also free
+            // If candidates exist:
+            if(candidates.length > 0) {
+                for(let t of candidates) {
+                    if(getLoadCount(t) >= 8) continue; // Hard Cap 8
+
+                    for(let s of slots) {
+                        // Check collision
+                        if(sectionSchedule[section.id][s] === null && teacherSchedule[t.id][s] === null) {
+                            // Assign
+                            sectionSchedule[section.id][s] = { subject: subject, teacher: t.name, status: 'ok' };
+                            teacherSchedule[t.id][s] = { desc: `${subject} - ${section.name}`, type: 'Teaching' };
+                            assigned = true;
+                            break;
+                        }
+                    }
+                    if(assigned) break; // Stop looking for teacher
+                }
+            }
+
+            // 5. If Not Assigned (No teacher exists, or all full)
+            if(!assigned) {
+                // Find any empty slot in section to mark VACANT
+                for(let s of slots) {
+                    if(sectionSchedule[section.id][s] === null) {
+                        sectionSchedule[section.id][s] = { subject: subject, teacher: 'VACANT - REQUEST TEACHER', status: 'missing' };
+                        vacancies.push({ subject: subject, section: section.name });
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Step C: Fill Teacher Gaps (360 Mins)
+        activeTeachers.forEach(t => {
+            for(let i=0; i<8; i++) {
+                if(teacherSchedule[t.id][i] === null) {
+                    teacherSchedule[t.id][i] = { desc: 'Preparation of IMs', type: 'Ancillary' };
+                }
+            }
+        });
+
+        renderDisplay();
+    }
+
+    function getLoadCount(t) {
+        // Count how many teaching slots currently assigned in our schedule tracker
+        if(!teacherSchedule[t.id]) return 0;
+        return teacherSchedule[t.id].filter(l => l && l.type === 'Teaching').length;
+    }
+
+    // --- 3. RENDER LOGIC ---
+
+    function renderDisplay() {
+        const mode = document.getElementById('viewMode').value;
+        const container = document.getElementById('displayArea');
+        container.innerHTML = '';
+
+        if(mode === 'summary') renderSummary(container);
+        else if(mode === 'teacher') renderTeacherView(container);
+        else renderStudentView(container);
+    }
+
+    function renderSummary(container) {
+        // Calculate Totals
+        let gapCounts = {};
+        vacancies.forEach(v => {
+            gapCounts[v.subject] = (gapCounts[v.subject] || 0) + 1;
+        });
+
+        let rows = '';
+        for(let [sub, count] of Object.entries(gapCounts)) {
+            // Logic: A teacher can take 8 loads max.
+            let needed = Math.ceil(count / 8); 
+            rows += `
+            <tr class="bg-red-50 border-b border-red-200">
+                <td class="p-3 font-bold text-red-900">${sub}</td>
+                <td class="p-3 text-center text-red-800">${count} Sections</td>
+                <td class="p-3 text-center font-bold text-red-700 underline">Request ${needed} Teacher(s)</td>
+            </tr>`;
+        }
+        
+        if(vacancies.length === 0) {
+            rows = `<tr><td colspan="3" class="p-4 text-center text-green-600 font-bold">No Gaps! All classes covered.</td></tr>`;
+        }
+
+        // Teacher Load Summary
+        let teacherRows = activeTeachers.map(t => {
+            let teaching = getLoadCount(t);
+            let prep = 8 - teaching;
+            // Load balance check
+            let balanceColor = teaching < 3 ? "text-yellow-600" : "text-green-600";
+            
+            return `<tr class="border-b">
+                <td class="p-2 border-r">${t.name}</td>
+                <td class="p-2 border-r font-mono text-xs uppercase">${t.major}</td>
+                <td class="p-2 text-center font-bold ${balanceColor}">${teaching}</td>
+                <td class="p-2 text-center text-gray-500">${prep}</td>
+                <td class="p-2 text-center text-xs font-bold bg-gray-50">360</td>
+            </tr>`;
+        }).join('');
+
+        container.innerHTML = `
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <div class="bg-white rounded-lg shadow border border-red-200 overflow-hidden">
+                <div class="bg-red-600 text-white p-3 font-bold uppercase tracking-wide">
+                    ⚠️ Gap Identification (Vacancies)
+                </div>
+                <div class="p-4">
+                    <p class="text-sm text-gray-600 mb-4">The following subjects have no available teachers based on the 8-load limit.</p>
+                    <table class="w-full text-sm text-left">
+                        <thead class="text-xs text-gray-700 uppercase bg-red-100">
+                            <tr>
+                                <th class="p-3">Subject</th>
+                                <th class="p-3 text-center">Unassigned Loads</th>
+                                <th class="p-3 text-center">Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rows}</tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow border border-gray-200 overflow-hidden">
+                <div class="bg-blue-600 text-white p-3 font-bold uppercase tracking-wide">
+                    📊 Load Balancing Status
+                </div>
+                <div class="p-4">
+                    <p class="text-sm text-gray-600 mb-4">Target: Even distribution among same majors. Max 8 loads.</p>
+                    <table class="w-full text-sm text-left border text-sm">
+                        <thead class="text-xs text-gray-700 uppercase bg-gray-100">
+                            <tr>
+                                <th class="p-2 border-r">Name</th>
+                                <th class="p-2 border-r">Major</th>
+                                <th class="p-2 text-center">Teach</th>
+                                <th class="p-2 text-center">Prep</th>
+                                <th class="p-2 text-center">Mins</th>
+                            </tr>
+                        </thead>
+                        <tbody>${teacherRows}</tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        `;
+    }
+
+    function renderTeacherView(container) {
+        let html = '<div class="grid grid-cols-1 gap-8">';
+        
+        activeTeachers.forEach(t => {
+            const sched = teacherSchedule[t.id];
+            
+            // Build visual rows with breaks
+            const displaySequence = [
+                { t: "7:30-8:15", s: 0 }, 
+                { t: "7:50-8:35", s: 0 }, // Alternative time ref
+                { t: "8:15-9:00", s: 1 },
+                { isBreak: true, lbl: "SUPERVISED RECESS (15m)" },
+                { t: "9:15-10:00", s: 2 }, 
+                { t: "10:00-10:45", s: 3 }, 
+                { t: "10:45-11:30", s: 4 },
+                { isBreak: true, lbl: "LUNCH BREAK (1hr)" },
+                { t: "12:30-1:15", s: 5 }, 
+                { t: "1:15-2:00", s: 6 }, 
+                { t: "2:00-2:45", s: 7 }
+            ];
+
+            let rows = '';
+            // We use standard 0-7 indices, ignoring duplicate time labels for simplicity
+            let usedSlots = [0,1,2,3,4,5,6,7];
+            
+            // Custom render loop to match the PDF visual style
+            let slotIndex = 0;
+            
+            // Map strictly to 0-7
+            const timeLabels = ["7:30-8:15", "8:15-9:00", "9:15-10:00", "10:00-10:45", "10:45-11:30", "12:30-1:15", "1:15-2:00", "2:00-2:45"];
+            
+            for(let i=0; i<8; i++) {
+                // Insert Breaks
+                if(i === 2) rows += `<tr class="bg-orange-100"><td class="p-1 border text-center text-xs font-bold text-orange-800" colspan="3">SNACKS</td></tr>`;
+                if(i === 5) rows += `<tr class="bg-green-100"><td class="p-1 border text-center text-xs font-bold text-green-800" colspan="3">LUNCH</td></tr>`;
+
+                const data = sched[i];
+                let bg = data.type === 'Teaching' ? 'bg-white' : 'bg-blue-50 text-gray-500 italic';
+                
+                rows += `
+                <tr>
+                    <td class="p-2 border text-xs text-center font-mono w-24">${timeLabels[i]}</td>
+                    <td class="p-2 border text-xs text-center w-12">45</td>
+                    <td class="p-2 border text-sm ${bg} text-center">${data.desc}</td>
+                </tr>`;
+            }
+
+            html += `
+            <div class="bg-white p-0 shadow-lg border border-gray-300 break-inside-avoid max-w-4xl mx-auto w-full">
+                <div class="bg-gray-800 text-white p-3 flex justify-between items-center">
+                    <div>
+                        <h2 class="font-bold text-lg uppercase">${t.name}</h2>
+                        <span class="text-xs bg-gray-600 px-2 py-1 rounded ml-2">${t.major}</span>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-xl font-bold">360</span> <span class="text-xs opacity-75">mins</span>
+                    </div>
+                </div>
+                <table class="w-full border-collapse border-b border-gray-200">
+                    <tr class="bg-gray-100 text-gray-600 text-xs uppercase">
+                        <th class="p-1 border text-center">Time</th>
+                        <th class="p-1 border text-center">Mins</th>
+                        <th class="p-1 border text-center">Activity (Mon-Fri)</th>
+                    </tr>
+                    <tr>
+                        <td class="p-2 border text-xs text-center font-mono">7:20-7:50</td>
+                        <td class="p-2 border text-xs text-center">30</td>
+                        <td class="p-2 border text-xs text-center font-bold text-gray-600">FLAG CEREMONY / SANITATION</td>
+                    </tr>
+                    ${rows}
+                </table>
+            </div>`;
+        });
+        
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    function renderStudentView(container) {
+        let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-6">';
+        
+        sections.forEach(sec => {
+            const sched = sectionSchedule[sec.id];
+            
+            let rows = '';
+            const timeLabels = ["7:30-8:15", "8:15-9:00", "9:15-10:00", "10:00-10:45", "10:45-11:30", "12:30-1:15", "1:15-2:00", "2:00-2:45"];
+
+            for(let i=0; i<8; i++) {
+                if(i === 2) rows += `<tr class="bg-orange-100"><td colspan="2" class="p-1 text-center text-xs font-bold text-orange-800">SNACKS</td></tr>`;
+                if(i === 5) rows += `<tr class="bg-green-100"><td colspan="2" class="p-1 text-center text-xs font-bold text-green-800">LUNCH</td></tr>`;
+
+                const slot = sched[i];
+                let content = '???';
+                let style = '';
+                
+                if(slot) {
+                    if(slot.status === 'missing') {
+                        content = `<div class="font-bold text-red-600">${slot.subject}</div><div class="text-[10px] bg-red-600 text-white px-1 inline-block rounded">VACANT</div>`;
+                        style = 'bg-red-50';
+                    } else {
+                        content = `<div class="font-bold text-gray-800">${slot.subject}</div><div class="text-xs text-gray-500">${slot.teacher}</div>`;
+                        style = 'bg-white';
+                    }
+                }
+
+                rows += `
+                <tr>
+                    <td class="p-2 border text-xs text-center font-mono w-20">${timeLabels[i]}</td>
+                    <td class="p-2 border text-sm text-center ${style}">${content}</td>
+                </tr>`;
+            }
+
+            html += `
+            <div class="bg-white border-2 border-gray-800 break-inside-avoid">
+                <div class="bg-gray-800 text-white p-2 text-center font-bold uppercase">
+                    ${sec.name}
+                </div>
+                <table class="w-full border-collapse">
+                    ${rows}
+                </table>
+            </div>`;
+        });
+
+        html += '</div>';
+        container.innerHTML = html;
+    }
+
+    // Run once on load
+    runGenerator();
+</script>
+</body>
+</html>
